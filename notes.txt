@@ -1,1 +1,13 @@
 For live reloading  go install github.com/air-verse/air@latest
+
+
+ curl -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Test Message from Pub/Sub!", "type": "bell_update"}' \
+     http://localhost:8090/api/send-notification
+
+
+curl -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"message": "Test Message from Pub/Sub!", "type": "bell_update"}' \
+     https://v3-notifications-service-532361364762.us-central1.run.app/api/send-notification 
