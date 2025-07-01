@@ -4,22 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
+	"log/slog"
+	"net"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"cloud.google.com/go/pubsub" // Import Pub/Sub SDK
+	"cloud.google.com/go/pubsub"
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"  // Import codes package
+	"google.golang.org/grpc/status" // Import status package
+
+	notificationpb "dxmultiomics.com/service-notification/notificationpb"
+	// "github.com/improbable-eng/grpc-web/go/grpcweb" // REMOVE THIS IMPORT
 )
 
+// --- Constants ---
 const (
-	// projectID is automatically detected by the client library when running on GCP.
-	topicID        = "notifications-topic"
-	subscriptionID = "notifications-topic-sub"
+	defaultPort = "8090" // Default for local development (Go backend)
 )
 
-// NotificationPayload defines the structure of our notification data
+// --- NotificationPayload (internal struct for Pub/Sub unmarshaling)---
 type NotificationPayload struct {
 	ID        string `json:"id"`
 	Type      string `json:"type"`
@@ -27,232 +33,200 @@ type NotificationPayload struct {
 	Timestamp string `json:"timestamp"`
 }
 
-// EventBroadcaster manages and broadcasts events to connected SSE clients
+// --- EventBroadcaster ---
 type EventBroadcaster struct {
-	// Channel to receive new events that need to be broadcasted (now fed by Pub/Sub)
-	Notifier chan NotificationPayload
-	// Channel to indicate new client connections
-	newClients chan chan NotificationPayload
-	// Channel to indicate client disconnections
-	closingClients chan chan NotificationPayload
-	// Map of currently connected clients, where each client has its own channel
-	clients map[chan NotificationPayload]bool
+	Notifier       chan *notificationpb.Notification
+	newClients     chan chan *notificationpb.Notification
+	closingClients chan chan *notificationpb.Notification
+	clients        map[chan *notificationpb.Notification]bool
 }
 
-// NewEventBroadcaster creates and returns an initialized EventBroadcaster
 func NewEventBroadcaster() *EventBroadcaster {
 	return &EventBroadcaster{
-		Notifier:       make(chan NotificationPayload, 100), // Buffered for bursts
-		newClients:     make(chan chan NotificationPayload),
-		closingClients: make(chan chan NotificationPayload),
-		clients:        make(map[chan NotificationPayload]bool),
+		Notifier:       make(chan *notificationpb.Notification, 100),
+		newClients:     make(chan chan *notificationpb.Notification),
+		closingClients: make(chan chan *notificationpb.Notification),
+		clients:        make(map[chan *notificationpb.Notification]bool),
 	}
 }
 
-// Start method listens for new events, client connections/disconnections
-// This should be run as a goroutine
 func (b *EventBroadcaster) Start() {
 	for {
 		select {
-		case s := <-b.newClients: // New client connected
+		case s := <-b.newClients:
 			b.clients[s] = true
-			log.Println("Added new SSE client")
-		case s := <-b.closingClients: // Client disconnected
+			slog.Info("Added new gRPC streaming client")
+		case s := <-b.closingClients:
 			delete(b.clients, s)
-			close(s) // Close the client's channel
-			log.Println("Removed SSE client")
-		case event := <-b.Notifier: // New notification event to broadcast
-			// Send the event to all active clients (will block briefly if client's buffer is full)
+			close(s)
+			slog.Info("Removed gRPC streaming client")
+		case event := <-b.Notifier:
 			for clientChan := range b.clients {
-				// Direct send. This ensures the message is put into the buffered channel.
-				// If the channel is full, this send will block until Space is available,
-				// or until the client eventually becomes active.
-				// For extreme cases, you might want a timeout on this send or check len(clientChan)
-				clientChan <- event
+				// Non-blocking send or drop if client's buffer is full
+				select {
+				case clientChan <- event:
+				default:
+					slog.Warn("Dropped event for a client: channel full", "reason", "slow_consumer")
+				}
 			}
 		}
-
 	}
 }
 
-// ServeHTTP implements http.Handler for the SSE endpoint
-func (b *EventBroadcaster) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Set headers for Server-Sent Events
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// CORS headers for Remix client (IMPORTANT: Adjust for production)
-	w.Header().Set("Access-Control-Allow-Origin", "http://dxmultiomics.com")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-	// Get a channel to notify when the client disconnects
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel() // Ensure cancel is called when handler exits
-
-	// Make sure the ResponseWriter is a Flusher
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
-		return
-	}
-
-	// Create a dedicated channel for this client
-	clientChan := make(chan NotificationPayload, 5) // Use a small buffer, e.g., 5 messages
-	b.newClients <- clientChan                      // Register this client
-
-	// Send an initial message to signify connection
-	fmt.Fprintf(w, "data: %s\n\n", "Connected to Go SSE Service")
-	flusher.Flush()
-
-	// Listen for events or client disconnection
-	for {
-		select {
-		case <-ctx.Done(): // Client disconnected
-			b.closingClients <- clientChan // Unregister this client
-			log.Println("SSE client disconnected from Go service.")
-			return
-		case event := <-clientChan: // Received an event to send to this client
-			jsonEvent, err := json.Marshal(event)
-			if err != nil {
-				log.Printf("Error marshaling event for client: %v", err)
-				continue
-			}
-			// --- ADD THIS LINE HERE ---
-			log.Printf("GO_SERVICE_WRITE: Attempting to write event to SSE client: %s\n", string(jsonEvent))
-			// --- END ADDED LINE ---
-			fmt.Fprintf(w, "data: %s\n\n", jsonEvent)
-			flusher.Flush() // Send the data immediately
-		}
-	}
-}
-
-// PubSubPublisher handles publishing messages to a Pub/Sub topic
-func PubSubPublisher(w http.ResponseWriter, r *http.Request, pubSubClient *pubsub.Client) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var reqBody struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	notification := NotificationPayload{
-		ID:        fmt.Sprintf("notification-%d", time.Now().UnixNano()),
-		Type:      reqBody.Type,
-		Message:   reqBody.Message,
-		Timestamp: time.Now().Format(time.RFC3339),
-	}
-
-	// Marshal the notification payload to JSON bytes for Pub/Sub
-	data, err := json.Marshal(notification)
-	if err != nil {
-		log.Printf("Error marshaling notification for Pub/Sub: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Get a reference to the topic
-	t := pubSubClient.Topic(topicID)
-	// Publish the message
-	result := t.Publish(ctx, &pubsub.Message{
-		Data: data,
-	})
-
-	// Block until the publish operation completes
-	id, err := result.Get(ctx)
-	if err != nil {
-		log.Printf("Failed to publish message to Pub/Sub: %v", err)
-		http.Error(w, "Failed to publish notification", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Published notification message (ID: %s) to Pub/Sub topic %s", id, topicID)
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Notification published to Pub/Sub\n")
-}
-
-// PubSubReceiver listens for messages on a Pub/Sub subscription and pushes them to the broadcaster
-func PubSubReceiver(ctx context.Context, pubSubClient *pubsub.Client, broadcaster *EventBroadcaster) {
+// --- PubSubReceiver ---
+func PubSubReceiver(ctx context.Context, pubSubClient *pubsub.Client, broadcaster *EventBroadcaster, subscriptionID string) {
 	sub := pubSubClient.Subscription(subscriptionID)
+	// Add a check to ensure the subscription exists at startup. This provides a clear error message.
+	exists, err := sub.Exists(ctx)
+	if err != nil {
+		slog.Error("Failed to check for Pub/Sub subscription existence", "error", err)
+		os.Exit(1)
+	}
+	if !exists {
+		slog.Error("Pub/Sub subscription does not exist. Please create it.", "subscription_id", subscriptionID)
+		os.Exit(1)
+	}
 
-	log.Printf("Listening for messages on Pub/Sub subscription %s...", subscriptionID)
+	slog.Info("Listening for messages on Pub/Sub subscription", "subscription_id", subscriptionID)
 
-	// Receive messages
-	err := sub.Receive(ctx, func(_ context.Context, msg *pubsub.Message) {
-		log.Printf("Received Pub/Sub message ID: %s", msg.ID)
-		var notification NotificationPayload
-		if err := json.Unmarshal(msg.Data, &notification); err != nil {
-			log.Printf("Error unmarshaling Pub/Sub message data: %v", err)
-			msg.Ack() // Acknowledge even on error to prevent reprocessing bad messages
+	err = sub.Receive(ctx, func(_ context.Context, msg *pubsub.Message) {
+		slog.Info("Received Pub/Sub message", "message_id", msg.ID)
+		var notificationPayload NotificationPayload
+		if err := json.Unmarshal(msg.Data, &notificationPayload); err != nil {
+			slog.Error("Error unmarshaling Pub/Sub message data", "error", err, "message_id", msg.ID)
+			msg.Ack()
 			return
 		}
 
-		broadcaster.Notifier <- notification // Push to the broadcaster's internal channel
-		log.Printf("Forwarded Pub/Sub message to SSE broadcaster: %v", notification)
-		msg.Ack() // Acknowledge the message to remove it from the subscription
+		protoNotification := &notificationpb.Notification{
+			Id:        notificationPayload.ID,
+			Type:      notificationPayload.Type,
+			Message:   notificationPayload.Message,
+			Timestamp: notificationPayload.Timestamp,
+		}
+
+		broadcaster.Notifier <- protoNotification
+		slog.Info("Forwarded Pub/Sub message to gRPC broadcaster", "message_id", protoNotification.Id)
+		msg.Ack()
 	})
 
 	if err != nil && err != context.Canceled {
-		log.Fatalf("Pub/Sub Receive failed: %v", err)
+		slog.Error("Pub/Sub Receive failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Stopped listening on Pub/Sub subscription.")
+	slog.Info("Stopped listening on Pub/Sub subscription.")
 }
 
+// --- gRPC Notification Service Implementation ---
+type notificationService struct {
+	notificationpb.UnimplementedNotificationServiceServer
+	broadcaster *EventBroadcaster
+}
+
+func (s *notificationService) StreamNotifications(req *notificationpb.StreamNotificationsRequest, stream notificationpb.NotificationService_StreamNotificationsServer) error {
+	slog.Info("Client connected for StreamNotifications", "user_id", req.GetUserId())
+
+	if req.GetUserId() == "" {
+		return status.Errorf(codes.Unauthenticated, "user_id is required") // Example: enforce user ID
+	}
+
+	clientChan := make(chan *notificationpb.Notification, 5)
+	s.broadcaster.newClients <- clientChan
+
+	defer func() {
+		slog.Info("Client disconnected from StreamNotifications. Unregistering.", "user_id", req.GetUserId())
+		s.broadcaster.closingClients <- clientChan
+	}()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case notification := <-clientChan:
+			if err := stream.Send(notification); err != nil {
+				slog.Error("Failed to send notification to client. Closing stream.", "user_id", req.GetUserId(), "error", err)
+				return err
+			}
+			slog.Info("Sent notification to client", "user_id", req.GetUserId(), "message_id", notification.GetId())
+		}
+	}
+}
+
+// --- Main function: Sets up pure gRPC server ---
 func main() {
-	// Root context for application lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Setup structured logging
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	err := godotenv.Load()
 	if err != nil {
-		log.Printf("Error loading .env file: %v", err)
+		slog.Info("Could not load .env file, using environment variables", "error", err)
 	}
 
-	// Initialize Pub/Sub client
-	// When running on GCP (like Cloud Run), the project ID is automatically
-	// detected from the environment. Pass an empty string for the projectID.
-	// For local development, you might need to set the GOOGLE_CLOUD_PROJECT env var.
+	// --- Configuration from Environment Variables (Best Practice) ---
 	projectID := os.Getenv("GCP_PROJECT_ID")
-
-	pubSubClient, err := pubsub.NewClient(ctx, projectID)
-	if err != nil {
-		log.Fatalf("Failed to create Pub/Sub client: %v", err)
+	if projectID == "" {
+		slog.Error("GCP_PROJECT_ID environment variable not set. This is required.")
+		os.Exit(1)
 	}
-	defer pubSubClient.Close() // Close client when main exits
 
-	broadcaster := NewEventBroadcaster()
-	go broadcaster.Start() // Start the event broadcaster as a goroutine
+	subscriptionID := os.Getenv("PUBSUB_SUBSCRIPTION_ID")
+	if subscriptionID == "" {
+		subscriptionID = "notifications-topic-sub" // Sensible default
+		slog.Info("PUBSUB_SUBSCRIPTION_ID not set, using default", "subscription_id", subscriptionID)
+	}
 
-	// Start Pub/Sub receiver in a goroutine
-	go PubSubReceiver(ctx, pubSubClient, broadcaster)
-
-	// SSE Endpoint for clients (e.g., your Remix server `notificationEmitter.server.ts`)
-	http.Handle("/sse/notifications", broadcaster)
-
-	// REST Endpoint to trigger a notification (now publishes to Pub/Sub)
-	// Use a closure to pass the pubSubClient to the handler
-	http.HandleFunc("/api/send-notification", func(w http.ResponseWriter, r *http.Request) {
-		PubSubPublisher(w, r, pubSubClient)
-	})
-
-	// Get port from environment for Cloud Run
+	// Get port from environment for Cloud Run or local dev
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8090" // Default for local development
+		port = defaultPort
 	}
 	listenAddr := fmt.Sprintf(":%s", port)
 
-	fmt.Printf("Go Notification Service running on %s\n", listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+	// --- Initialize Clients ---
+	pubSubClient, err := pubsub.NewClient(ctx, projectID)
+	if err != nil {
+		slog.Error("Failed to create Pub/Sub client", "error", err)
+		os.Exit(1)
+	}
+	defer pubSubClient.Close()
+
+	// --- Start Application Components ---
+	broadcaster := NewEventBroadcaster()
+	go broadcaster.Start()
+
+	go PubSubReceiver(ctx, pubSubClient, broadcaster, subscriptionID)
+
+	// --- Setup pure gRPC server (no HTTP wrapper here) ---
+	lis, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		slog.Error("Failed to listen on address", "address", listenAddr, "error", err)
+		os.Exit(1)
+	}
+
+	grpcServer := grpc.NewServer()
+	notificationpb.RegisterNotificationServiceServer(grpcServer, &notificationService{broadcaster: broadcaster})
+
+	// --- Start server and handle graceful shutdown ---
+	go func() {
+		slog.Info("Go gRPC Notification Service starting", "address", listenAddr)
+		if err := grpcServer.Serve(lis); err != nil {
+			slog.Error("Failed to serve gRPC", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shut down the server.
+	// This is a standard pattern for robust services.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit // Block until a signal is received
+
+	slog.Info("Shutting down gRPC server...")
+	grpcServer.GracefulStop()
+	slog.Info("gRPC server stopped.")
+	// The main context cancel() is already deferred, which will signal PubSubReceiver to stop.
 }

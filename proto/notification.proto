@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package notification;
+
+// The go_package option is critical.
+// It tells protoc to create the output inside a 'notificationpb' directory,
+// matching your import path: "dxmultiomics.com/service-notification/notificationpb"
+option go_package = "dxmultiomics.com/service-notification/notificationpb";
+
+// The notification message structure
+message Notification {
+  string id = 1;
+  string type = 2;
+  string message = 3;
+  string timestamp = 4;
+}
+
+// Request to start streaming notifications
+message StreamNotificationsRequest {
+  string user_id = 1; // To identify the client
+}
+
+// The gRPC service definition
+service NotificationService {
+  // A server-to-client streaming RPC.
+  rpc StreamNotifications(StreamNotificationsRequest) returns (stream Notification) {}
+}

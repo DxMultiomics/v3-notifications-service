@@ -1,0 +1,6 @@
+# Use an official Envoy image.
+FROM envoyproxy/envoy:v1.29-latest
+
+# Copy the configuration file into the container.
+# The default command for the Envoy image will automatically use this file.
+COPY envoy.yaml /etc/envoy/envoy.yaml

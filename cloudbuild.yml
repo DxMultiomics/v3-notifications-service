@@ -1,15 +1,25 @@
 steps:
-  # 1. Build the container image
+  # 1. Build the Go service container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA', '.']
-    id: 'Build'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA', '-f', 'Dockerfile', '.']
+    id: 'Build Go Service'
 
-  # 2. Push the container image to Google Container Registry (GCR)
+  # 2. Build the Envoy proxy container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA']
-    id: 'Push'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA', '-f', 'Dockerfile.envoy', '.']
+    id: 'Build Envoy Proxy'
 
-  # 3. Deploy container image to Cloud Run
+  # 3. Push the Go service container
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA']
+    id: 'Push Go Service'
+
+  # 4. Push the Envoy proxy container
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA']
+    id: 'Push Envoy Proxy'
+
+  # 5. Deploy multi-container service to Cloud Run
   - name: 'gcr.io/cloud-builders/gcloud'
     id: 'Deploy'
     entrypoint: 'gcloud'
@@ -17,16 +27,32 @@ steps:
       - 'run'
       - 'deploy'
       - '${_SERVICE_NAME}'
-      - '--image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+      # --- Envoy Container (public-facing) ---
+      - '--image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
+      - '--port=8091' # The port Envoy listens on
+      # --- Go Service Container (sidecar) ---
+      - '--container=go-backend' # A name for the sidecar container
+      - '--container-image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA'
+      - '--container-port=8090' # The port the Go service listens on
+      # --- Environment variables for the Go sidecar ---
+      - '--container-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID}'
+      # --- General deployment settings ---
       - '--region=${_REGION}'
       - '--platform=managed'
-      # The following flag allows unauthenticated access.
-      # Remove --allow-unauthenticated if you want to secure your service, for example, by setting up IAM.
+      # Assign a dedicated service account with "Pub/Sub Subscriber" role.
+      - '--service-account=${_SERVICE_ACCOUNT_EMAIL}'
+      # Allow unauthenticated access for now. For production, you would likely
+      # secure this and use an authenticated frontend or API Gateway.
       - '--allow-unauthenticated'
 
 images:
-  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
 
 substitutions:
   _SERVICE_NAME: 'v3-notifications-service'
   _REGION: 'us-central1' # <-- IMPORTANT: Change to your preferred GCP region
+  # The service account needs 'roles/pubsub.subscriber' on the subscription.
+  # Create it with: gcloud iam service-accounts create v3-notifications-sa
+  _SERVICE_ACCOUNT_EMAIL: 'v3-notifications-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+  _SUBSCRIPTION_ID: 'notifications-topic-sub'
