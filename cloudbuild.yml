@@ -34,6 +34,8 @@ steps:
       - '--container=go-backend' # A name for the sidecar container
       - '--container-image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA'
       - '--container-port=8090' # The port the Go service listens on
+      # --- Environment variables for the Envoy proxy ---
+      - '--set-env-vars=ALLOWED_ORIGINS=${_ALLOWED_ORIGINS}'
       # --- Environment variables for the Go sidecar ---
       - '--container-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID}'
       # --- General deployment settings ---
@@ -56,3 +58,5 @@ substitutions:
   # Create it with: gcloud iam service-accounts create v3-notifications-sa
   _SERVICE_ACCOUNT_EMAIL: 'v3-notifications-sa@${PROJECT_ID}.iam.gserviceaccount.com'
   _SUBSCRIPTION_ID: 'notifications-topic-sub'
+  # Regex pattern for allowed frontend origins.
+  _ALLOWED_ORIGINS: '(http://localhost:5173|https://dxmultiomics.com)'

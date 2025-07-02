@@ -27,9 +27,11 @@ static_resources:
               # *** CORS policy is defined here, at the virtual host level ***
               cors:
                 allow_origin_string_match:
-                # Be explicit about allowed origins for better security and to resolve fetch errors.
-                - exact: "http://localhost:5173"      # For local development
-                - exact: "https://dxmultiomics.com" # For your deployed production frontend
+                # This will be populated by the ALLOWED_ORIGINS environment variable.
+                # The format should be a regex pattern matching your origins.
+                # e.g., "(http://localhost:5173|https://.*\\.dxmultiomics\\.com)"
+                - safe_regex:
+                    regex: "${ALLOWED_ORIGINS}"
                 allow_methods: "GET, POST, OPTIONS" # OPTIONS is needed for CORS pre-flight requests
                 allow_headers: "content-type, x-grpc-web, x-user-agent, x-firebase-id-token" # Add any custom headers your client sends
                 expose_headers: "grpc-status, grpc-message" # Expose gRPC status headers to the client
