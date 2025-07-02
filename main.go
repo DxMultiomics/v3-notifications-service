@@ -13,9 +13,9 @@ import (
 	"cloud.google.com/go/pubsub"
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"  // Import codes package
-	"google.golang.org/grpc/status" // Import status package
 
+	// Import codes package
+	// Import status package
 	notificationpb "dxmultiomics.com/service-notification/notificationpb"
 	// "github.com/improbable-eng/grpc-web/go/grpcweb" // REMOVE THIS IMPORT
 )
@@ -127,7 +127,9 @@ func (s *notificationService) StreamNotifications(req *notificationpb.StreamNoti
 	slog.Info("Client connected for StreamNotifications", "user_id", req.GetUserId())
 
 	if req.GetUserId() == "" {
-		return status.Errorf(codes.Unauthenticated, "user_id is required") // Example: enforce user ID
+		// During development, you might allow anonymous connections.
+		// In production, this should be a hard error after implementing real authentication.
+		slog.Warn("Connecting client did not provide a user_id.")
 	}
 
 	clientChan := make(chan *notificationpb.Notification, 5)
