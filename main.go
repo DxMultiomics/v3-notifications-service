@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"cloud.google.com/go/pubsub"
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
 
-	// Import codes package
-	// Import status package
 	notificationpb "dxmultiomics.com/service-notification/notificationpb"
-	// "github.com/improbable-eng/grpc-web/go/grpcweb" // REMOVE THIS IMPORT
+	"github.com/improbable-eng/grpc-web/go/grpcweb" // REMOVE THIS IMPORT
 )
 
 // --- Constants ---
@@ -201,23 +200,40 @@ func main() {
 	go broadcaster.Start()
 
 	go PubSubReceiver(ctx, pubSubClient, broadcaster, subscriptionID)
-
-	// --- Setup pure gRPC server (no HTTP wrapper here) ---
-	lis, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		slog.Error("Failed to listen on address", "address", listenAddr, "error", err)
-		os.Exit(1)
+	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	if allowedOrigins == "" {
+		allowedOrigins = "http://localhost:5173,https://dxmultiomics.com" // Use a comma-separated list
+		slog.Warn("ALLOWED_ORIGINS not set, using default for local development", "origins", allowedOrigins)
 	}
 
 	grpcServer := grpc.NewServer()
 	notificationpb.RegisterNotificationServiceServer(grpcServer, &notificationService{broadcaster: broadcaster})
 
+	// --- Wrap the gRPC server to handle gRPC-Web requests ---
+	wrappedGrpcServer := grpcweb.WrapServer(grpcServer,
+		// This CORS logic was previously in envoy.yaml
+		grpcweb.WithOriginFunc(func(origin string) bool {
+			for _, allowed := range strings.Split(allowedOrigins, ",") {
+				if origin == strings.TrimSpace(allowed) {
+					return true
+				}
+			}
+			slog.Warn("CORS check failed for origin", "origin", origin)
+			return false
+		}),
+	)
+
+	// --- Start HTTP server and handle graceful shutdown ---
+	httpServer := &http.Server{
+		Addr:    listenAddr,
+		Handler: wrappedGrpcServer,
+	}
+
 	// --- Start server and handle graceful shutdown ---
 	go func() {
-		slog.Info("Go gRPC Notification Service starting", "address", listenAddr)
-		if err := grpcServer.Serve(lis); err != nil {
-			slog.Error("Failed to serve gRPC", "error", err)
-			os.Exit(1)
+		slog.Info("gRPC-Web server starting", "address", listenAddr)
+		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
+			slog.Error("HTTP server failed to start", "error", err)
 		}
 	}()
 
@@ -227,8 +243,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit // Block until a signal is received
 
-	slog.Info("Shutting down gRPC server...")
-	grpcServer.GracefulStop()
-	slog.Info("gRPC server stopped.")
-	// The main context cancel() is already deferred, which will signal PubSubReceiver to stop.
+	slog.Info("Shutting down server...")
+	if err := httpServer.Shutdown(context.Background()); err != nil {
+		slog.Error("Server shutdown failed", "error", err)
+	}
+	slog.Info("Server gracefully stopped.")
 }

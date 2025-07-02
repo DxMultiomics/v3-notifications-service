@@ -31,5 +31,5 @@ COPY --from=builder /app/v3-notifications-service .
 
 # Command to run the executable when the container starts.
 # Cloud Run will use the PORT environment variable, which your app reads.
-EXPOSE 8090
+EXPOSE 8080
 CMD ["./v3-notifications-service"]
