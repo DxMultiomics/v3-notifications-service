@@ -54,9 +54,7 @@ images:
 substitutions:
   _SERVICE_NAME: 'v3-notifications-service'
   _REGION: 'us-central1' # <-- IMPORTANT: Change to your preferred GCP region
-  # The service account needs 'roles/pubsub.subscriber' on the subscription.
-  # Create it with: gcloud iam service-accounts create v3-notifications-sa
-  _SERVICE_ACCOUNT_EMAIL: 'v3-notifications-sa@${PROJECT_ID}.iam.gserviceaccount.com'
   _SUBSCRIPTION_ID: 'notifications-topic-sub'
-  # Regex pattern for allowed frontend origins.
-  _ALLOWED_ORIGINS: '(http://localhost:5173|https://dxmultiomics.com)'
+  # The following variables are best set in a Cloud Build trigger or via the command line for security.
+  # _SERVICE_ACCOUNT_EMAIL: The service account for the Cloud Run service (e.g., v3-notifications-sa@<project-id>.iam.gserviceaccount.com).
+  # _ALLOWED_ORIGINS: Regex pattern for allowed frontend origins (e.g., '(http://localhost:5173|https://dxmultiomics.com)').

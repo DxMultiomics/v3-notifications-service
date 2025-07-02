@@ -177,8 +177,8 @@ func main() {
 
 	subscriptionID := os.Getenv("PUBSUB_SUBSCRIPTION_ID")
 	if subscriptionID == "" {
-		subscriptionID = "notifications-topic-sub" // Sensible default
-		slog.Info("PUBSUB_SUBSCRIPTION_ID not set, using default", "subscription_id", subscriptionID)
+		slog.Error("PUBSUB_SUBSCRIPTION_ID environment variable not set. This is required.")
+		os.Exit(1)
 	}
 
 	// Get port from environment for Cloud Run or local dev
