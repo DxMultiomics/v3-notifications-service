@@ -180,6 +180,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	slog.Info(projectID, "projectID")
+	slog.Info(subscriptionID, "subscriptionID")
+
 	// Get port from environment for Cloud Run or local dev
 	port := os.Getenv("PORT")
 	if port == "" {
