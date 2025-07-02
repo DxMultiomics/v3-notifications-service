@@ -30,19 +30,15 @@ steps:
       # --- Envoy Container (public-facing) ---
       - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
       - '--port=8091' # The port Envoy listens on
+      - '--set-env-vars=ALLOWED_ORIGINS=${_ALLOWED_ORIGINS}'
       # --- Go Service Container (sidecar) ---
       - '--container=go-backend' # A name for the sidecar container
-      - '--container-image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA'
-      - '--container-port=8090' # The port the Go service listens on
-      # --- Environment variables for the Envoy proxy ---
-      - '--set-env-vars=ALLOWED_ORIGINS=${_ALLOWED_ORIGINS}'
-      # --- Environment variables for the Go sidecar ---
-      - '--container-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID},PORT=8090'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA'
+      - '--port=8090' # The port the Go service listens on
+      - '--set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID},PORT=8090'
       # --- General deployment settings ---
       - '--region=${_REGION}'
       - '--platform=managed'
-      # Assign a dedicated service account with "Pub/Sub Subscriber" role.
-      - '--service-account=${_SERVICE_ACCOUNT_EMAIL}'
       # Allow unauthenticated access for now. For production, you would likely
       # secure this and use an authenticated frontend or API Gateway.
       - '--allow-unauthenticated'
@@ -56,6 +52,6 @@ substitutions:
   _REGION: 'us-central1' # <-- IMPORTANT: Change to your preferred GCP region
   _ARTIFACT_REGISTRY_REPO: 'cloud-run-source-deploy'
   _SUBSCRIPTION_ID: 'notifications-topic-sub'
-  # The following variables are best set in a Cloud Build trigger or via the command line for security.
-  # _SERVICE_ACCOUNT_EMAIL: The service account for the Cloud Run service (e.g., v3-notifications-sa@<project-id>.iam.gserviceaccount.com).
-  # _ALLOWED_ORIGINS: Regex pattern for allowed frontend origins (e.g., '(http://localhost:5173|https://dxmultiomics.com)').
+  # WARNING: For testing only. Do not commit hardcoded secrets to a public repository.
+  # Regex pattern for allowed frontend origins.
+  _ALLOWED_ORIGINS: '(http://localhost:5173|https://dxmultiomics.com)'
