@@ -37,7 +37,7 @@ steps:
       # --- Environment variables for the Envoy proxy ---
       - '--set-env-vars=ALLOWED_ORIGINS=${_ALLOWED_ORIGINS}'
       # --- Environment variables for the Go sidecar ---
-      - '--container-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID}'
+      - '--container-env-vars=GCP_PROJECT_ID=$PROJECT_ID,PUBSUB_SUBSCRIPTION_ID=${_SUBSCRIPTION_ID},PORT=8090'
       # --- General deployment settings ---
       - '--region=${_REGION}'
       - '--platform=managed'
@@ -55,6 +55,8 @@ substitutions:
   _SERVICE_NAME: 'v3-notifications-service'
   _REGION: 'us-central1' # <-- IMPORTANT: Change to your preferred GCP region
   _SUBSCRIPTION_ID: 'notifications-topic-sub'
-  # The following variables are best set in a Cloud Build trigger or via the command line for security.
-  # _SERVICE_ACCOUNT_EMAIL: The service account for the Cloud Run service (e.g., v3-notifications-sa@<project-id>.iam.gserviceaccount.com).
-  # _ALLOWED_ORIGINS: Regex pattern for allowed frontend origins (e.g., '(http://localhost:5173|https://dxmultiomics.com)').
+  # WARNING: For testing only. Do not commit hardcoded secrets to a public repository.
+  # Replace with your actual service account email.
+  _SERVICE_ACCOUNT_EMAIL: 'v3-notifications-sa@your-gcp-project-id.iam.gserviceaccount.com'
+  # Regex pattern for allowed frontend origins.
+  _ALLOWED_ORIGINS: '(http://localhost:5173|https://dxmultiomics.com)'
