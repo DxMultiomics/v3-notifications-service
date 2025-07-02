@@ -1,22 +1,22 @@
 steps:
   # 1. Build the Go service container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA', '-f', 'Dockerfile', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA', '-f', 'Dockerfile', '.']
     id: 'Build Go Service'
 
   # 2. Build the Envoy proxy container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA', '-f', 'Dockerfile.envoy', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-envoy:$COMMIT_SHA', '-f', 'Dockerfile.envoy', '.']
     id: 'Build Envoy Proxy'
 
   # 3. Push the Go service container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA']
     id: 'Push Go Service'
 
   # 4. Push the Envoy proxy container
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA']
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-envoy:$COMMIT_SHA']
     id: 'Push Envoy Proxy'
 
   # 5. Deploy multi-container service to Cloud Run
@@ -28,11 +28,11 @@ steps:
       - 'deploy'
       - '${_SERVICE_NAME}'
       # --- Envoy Container (public-facing) ---
-      - '--image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
       - '--port=8091' # The port Envoy listens on
       # --- Go Service Container (sidecar) ---
       - '--container=go-backend' # A name for the sidecar container
-      - '--container-image=gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA'
+      - '--container-image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA'
       - '--container-port=8090' # The port the Go service listens on
       # --- Environment variables for the Envoy proxy ---
       - '--set-env-vars=ALLOWED_ORIGINS=${_ALLOWED_ORIGINS}'
@@ -48,15 +48,14 @@ steps:
       - '--allow-unauthenticated'
 
 images:
-  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-go:$COMMIT_SHA'
-  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-go:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REGISTRY_REPO}/${_SERVICE_NAME}-envoy:$COMMIT_SHA'
 
 substitutions:
   _SERVICE_NAME: 'v3-notifications-service'
   _REGION: 'us-central1' # <-- IMPORTANT: Change to your preferred GCP region
+  _ARTIFACT_REGISTRY_REPO: 'cloud-run-source-deploy'
   _SUBSCRIPTION_ID: 'notifications-topic-sub'
-  # WARNING: For testing only. Do not commit hardcoded secrets to a public repository.
-  # Replace with your actual service account email.
-  _SERVICE_ACCOUNT_EMAIL: 'v3-notifications-sa@your-gcp-project-id.iam.gserviceaccount.com'
-  # Regex pattern for allowed frontend origins.
-  _ALLOWED_ORIGINS: '(http://localhost:5173|https://dxmultiomics.com)'
+  # The following variables are best set in a Cloud Build trigger or via the command line for security.
+  # _SERVICE_ACCOUNT_EMAIL: The service account for the Cloud Run service (e.g., v3-notifications-sa@<project-id>.iam.gserviceaccount.com).
+  # _ALLOWED_ORIGINS: Regex pattern for allowed frontend origins (e.g., '(http://localhost:5173|https://dxmultiomics.com)').
